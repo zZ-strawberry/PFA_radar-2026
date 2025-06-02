@@ -793,9 +793,9 @@ print(f"已启用滤波器类型: {config['filter']['type']}")
 # 加载模型，实例化机器人检测器和装甲板检测器 yolov5
 weights_path = config['paths']['models']['car']
 weights_path_next = config['paths']['models']['armor']
-detector = YOLOv5Detector(weights_path, data='yaml/car.yaml', conf_thres=0.1, iou_thres=0.5, max_det=14, ui=True)
+detector = YOLOv5Detector(weights_path, data='yaml/car.yaml', conf_thres=0.2, iou_thres=0.5, max_det=14, ui=True)
 detector_next = YOLOv5Detector(weights_path_next, data='yaml/armor.yaml', conf_thres=0.50, iou_thres=0.2,
-                               max_det=1,
+                               max_det=10,
                                ui=True)
 
 # 串口接收线程
@@ -845,35 +845,71 @@ while True:
     # 第一层神经网络识别
     result0 = detector.predict(img0)
     det_time += 1
+    
+    # 收集所有ROI区域
+    rois = []
+    positions = []
+    total_height = 0
+    max_width = 0
+    
     for detection in result0:
         cls, xywh, conf = detection
         if cls == 'car':
             left, top, w, h = xywh
             left, top, w, h = int(left), int(top), int(w), int(h)
-            # 存储第一次检测结果和区域
-            # ROI出机器人区域
-            cropped = camera_image[top:top + h, left:left + w]
-            cropped_img = np.ascontiguousarray(cropped)
-            # 第二层神经网络识别
-            result_n = detector_next.predict(cropped_img)
-            det_time += 1
-            if result_n:
-                # 叠加第二次检测结果到原图的对应位置
-                img0[top:top + h, left:left + w] = cropped_img
+            # 直接截取ROI
+            roi = camera_image[top:top + h, left:left + w]
+            if roi.size > 0:
+                rois.append(roi.copy())  # 保存原始ROI的副本
+                positions.append((left, top, w, h))
+                total_height += h
+                max_width = max(max_width, w)
 
-                for detection1 in result_n:
-                    cls, xywh, conf = detection1
-                    if cls:  # 所有装甲板都处理，可选择屏蔽一些:
-                        # print(cls)
-                        x, y, w, h = xywh
+    if rois:  # 如果有检测到的ROI区域
+        # 垂直拼接ROI（不做resize）
+        combined_roi = np.zeros((total_height, max_width, 3), dtype=np.uint8)
+        current_y = 0
+        for i, roi in enumerate(rois):
+            h, w = roi.shape[:2]
+            combined_roi[current_y:current_y + h, :w] = roi
+            positions[i] = (*positions[i], current_y)  # 添加y偏移
+            current_y += h
+            
+        # 第二层神经网络识别
+        combined_roi = np.ascontiguousarray(combined_roi)
+        result_n = detector_next.predict(combined_roi)
+        det_time += 1
+        # cv2.imshow("roi", combined_roi)
+
+        if result_n:
+            # 先将每个ROI区域从combined_roi映射回原图对应位置
+            for i, (left, top, w, h, y_offset) in enumerate(positions):
+                roi_height = rois[i].shape[0]
+                # 从combined_roi中提取对应区域
+                roi_region = combined_roi[y_offset:y_offset + roi_height, :w]
+                # 映射回原图
+                img0[top:top + roi_height, left:left + w] = roi_region
+
+            for detection1 in result_n:
+                cls, xywh, conf = detection1
+                if cls:
+                    x, y, w, h = xywh
+                    
+                    # 找到这个检测结果属于哪个原始ROI
+                    original_roi_index = -1
+                    for i, (_, _, _, roi_h, roi_y) in enumerate(positions):
+                        if y >= roi_y and y < roi_y + roi_h:
+                            original_roi_index = i
+                            break
+                            
+                    if original_roi_index != -1:
+                        # 将坐标映射回原图
+                        left, top, _, _ = positions[original_roi_index][:4]
                         x = x + left
-                        y = y + top
-                        # cv2.circle(img0, (int(x), int(y)), 15, (255, 0, 0), -1)
-                        t1 = time.time()
-                        # print(x, y, w, h)
+                        y = y - positions[original_roi_index][4] + top
+                        
                         # 原图中装甲板的中心下沿作为待仿射变化的点
-                        camera_point = np.array([[[min(x + 0.5 * w, img_x), min(y + 1.5 * h, img_y)]]],
-                                                dtype=np.float32)
+                        camera_point = np.array([[[min(x + 0.5 * w, img_x), min(y + 1.5 * h, img_y)]]], dtype=np.float32)
                         # 低到高依次仿射变化
                         # 先套用地面层仿射变化矩阵
                         mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_ground)
