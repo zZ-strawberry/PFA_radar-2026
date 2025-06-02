@@ -1,0 +1,58 @@
+global:
+  state: 'B'  # 队伍颜色 R/B
+  camera_mode: 'test'  # 'test':测试模式,'hik':海康相机,'video':USB相机（videocapture）
+  use_serial: True  # 串口启用开关  保证了无串口时能正常调试，虽然没什么影响（有try）
+  save_img: False  # 是否保存图像
+  map_size: [2800, 1500]  # 战场地图尺寸
+
+serial: # 串口
+  port: 'COM13'
+  baudrate: 115200
+  timeout: 1
+
+filter:
+  type: "sliding_window"  # 可选值：kalman/sliding_window
+  sliding_window:
+    window_size: 5  # 滑动窗口大小
+    max_inactive_time: 2.0 # 滤波器最大不活跃时间(秒)
+    threshold: 100000.0
+  kalman:
+    max_inactive_time: 2.0
+
+paths:
+  test_img: 'images/test_image.jpg' # 测试图片
+  calibration:
+    red: 'arrays_test_red.npy' # 加载标定好的仿射变换矩阵
+    blue: 'arrays_test_blue.npy'
+  map_images:
+    red: 'images-2025/map_red.jpg'  # 加载红方视角地图
+    blue: 'images-2025/map_blue.jpg'
+    mask: 'images-2025/map_mask.jpg' # 加载落点判断掩码
+    backup: 'images-2025/map.jpg'
+  models:
+    car: 'models/car.pt'
+    armor: 'models/armor.pt'
+
+camera_params:
+  exposure_time: 16000.0 # 曝光时间
+  gain: 17.9 # 增益值
+
+kalman:
+  process_noise: 1e-5
+  measurement_noise: 1e-1
+
+blind_zone:
+  base_time: 3.0  # 基础预测时间
+  offset_time: 1.7  # 时间偏移量(根据上一帧的信道占用数动态调整单点预测时间)
+  points:
+    R1: [[1065, 1083], [1005, 375]]  # (两个吊射点) [2645, 700](对面家，防英雄偷家)
+    R2: [[921, 747], [229, 109]]  # (银矿，兑矿区) [1336, 813](金矿)
+    R7: [[661, 745], [397, 821]]
+    B1: [[1717, 381], [1797, 1125]] # [85, 750]
+    B2: [[1900, 755], [2549, 1401]] # [1460, 688]
+    B7: [[2142, 747], [2405, 681]]
+
+ui:
+  info_panel_size: [420, 500]  # 信息面板尺寸
+  map_display_size: [900, 480]  # 地图显示尺寸
+  img_display_size: [1300, 900] # 画面显示尺寸
