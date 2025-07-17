@@ -11,14 +11,7 @@ import serial
 from information_ui import draw_information_ui
 from hik_camera import call_back_get_image, start_grab_and_get_data_size, close_and_destroy_device, set_Value, \
     get_Value, image_control
-import sys
-if sys.platform.startswith("win"):    
-    sys.path.append("./MvImport")
-    from MvImport.MvCameraControl_class import *
-else:
-    sys.path.append("./MvImport_Linux")
-    from MvImport_Linux.MvCameraControl_class import *
-
+from MvImport.MvCameraControl_class import *
 import cv2
 import numpy as np
 from detect_function import YOLOv5Detector
@@ -139,7 +132,6 @@ mapping_table = {
     "B7": 107
 }
 
-send_map={}
 # 盲区预测点位
 guess_table = {}
 for robot, points in config['blind_zone']['points'].items():
@@ -472,7 +464,6 @@ def ser_send():
     seq = 0
     global chances_flag
     global guess_value
-    global send_map
     # 单点预测时间
     guess_time = {
         'B1': 0,
@@ -582,19 +573,17 @@ def ser_send():
         try:
             all_filter_data = filter.get_all_data()
             if state == 'R':
-                if guess_list.get('B1'):
-                    send_map['B1'] = send_point_guess('B1', guess_time_limit)
-                # 未识别到英雄，进行盲区预测
-                else:
+                if not guess_list.get('B1'):
                     if all_filter_data.get('B1', False):
                         send_map['B1'] = send_point_B('B1', all_filter_data)
-
-                if guess_list.get('B2'):
-                    send_map['B2'] = send_point_guess('B2', guess_time_limit)
-                # 未识别到工程，进行盲区预测
                 else:
+                    send_map['B1'] = (0, 0)
+
+                if not guess_list.get('B2'):
                     if all_filter_data.get('B2', False):
                         send_map['B2'] = send_point_B('B2', all_filter_data)
+                else:
+                    send_map['B2'] = (0, 0)
 
                 # 步兵3号
                 if not guess_list.get('B3'):
@@ -625,19 +614,17 @@ def ser_send():
                         send_map['B7'] = send_point_B('B7', all_filter_data)
 
             if state == 'B':
-                if guess_list.get('R1'):
-                    send_map['R1'] = send_point_guess('R1', guess_time_limit)
-                # 未识别到英雄，进行盲区预测
-                else:
+                if not guess_list.get('R1'):
                     if all_filter_data.get('R1', False):
                         send_map['R1'] = send_point_R('R1', all_filter_data)
-
-                if guess_list.get('R2'):
-                    send_map['R2'] = send_point_guess('R2', guess_time_limit)
-                # 未识别到工程，进行盲区预测
                 else:
+                    send_map['R1'] = (0, 0)
+
+                if not guess_list.get('R2'):
                     if all_filter_data.get('R2', False):
                         send_map['R2'] = send_point_R('R2', all_filter_data)
+                else:
+                    send_map['R2'] = (0, 0)
 
                 # 步兵3号
                 if not guess_list.get('R3'):
@@ -685,7 +672,7 @@ def ser_send():
                     guess_value['R7'] = guess_value_now.get('R7')
 
             # 判断飞镖的目标是否切换，切换则尝试发动双倍易伤
-            if target != target_last:
+            if target != target_last and target != 0:
                 target_last = target
                 # 有双倍易伤机会，并且当前没有在双倍易伤
                 if double_vulnerability_chance > 0 and opponent_double_vulnerability == 0:
@@ -771,8 +758,7 @@ def ser_receive():
                     double_vulnerability_chance, opponent_double_vulnerability = Radar_decision(received_data2)
                 if target_result is not None:
                     received_cmd_id3, received_data3, received_seq3 = target_result
-                    target = (list(received_data3)[1] & 0b1100000) >> 6  # 0x0105
-                    # print(target)
+                    target = (list(received_data3)[1] & 0b1100000) >> 5
 
                 # 从缓冲区中移除已解析的数据包
                 buffer = buffer[sof_index + len(packet_data):]
@@ -793,9 +779,9 @@ print(f"已启用滤波器类型: {config['filter']['type']}")
 # 加载模型，实例化机器人检测器和装甲板检测器 yolov5
 weights_path = config['paths']['models']['car']
 weights_path_next = config['paths']['models']['armor']
-detector = YOLOv5Detector(weights_path, data='yaml/car.yaml', conf_thres=0.2, iou_thres=0.5, max_det=14, ui=True)
+detector = YOLOv5Detector(weights_path, data='yaml/car.yaml', conf_thres=0.1, iou_thres=0.5, max_det=14, ui=True)
 detector_next = YOLOv5Detector(weights_path_next, data='yaml/armor.yaml', conf_thres=0.50, iou_thres=0.2,
-                               max_det=10,
+                               max_det=1,
                                ui=True)
 
 # 串口接收线程
@@ -815,7 +801,7 @@ else:
 camera_image = None
 
 if camera_mode == 'test':
-    camera_image = cv2.imread(config['paths']['test_img'])
+    camera_image = cv2.imread('images/test_image.jpg')
 elif camera_mode == 'hik':
     # 海康相机图像获取线程
     thread_camera = threading.Thread(target=hik_camera_get, daemon=True)
@@ -845,71 +831,35 @@ while True:
     # 第一层神经网络识别
     result0 = detector.predict(img0)
     det_time += 1
-    
-    # 收集所有ROI区域
-    rois = []
-    positions = []
-    total_height = 0
-    max_width = 0
-    
     for detection in result0:
         cls, xywh, conf = detection
         if cls == 'car':
             left, top, w, h = xywh
             left, top, w, h = int(left), int(top), int(w), int(h)
-            # 直接截取ROI
-            roi = camera_image[top:top + h, left:left + w]
-            if roi.size > 0:
-                rois.append(roi.copy())  # 保存原始ROI的副本
-                positions.append((left, top, w, h))
-                total_height += h
-                max_width = max(max_width, w)
+            # 存储第一次检测结果和区域
+            # ROI出机器人区域
+            cropped = camera_image[top:top + h, left:left + w]
+            cropped_img = np.ascontiguousarray(cropped)
+            # 第二层神经网络识别
+            result_n = detector_next.predict(cropped_img)
+            det_time += 1
+            if result_n:
+                # 叠加第二次检测结果到原图的对应位置
+                img0[top:top + h, left:left + w] = cropped_img
 
-    if rois:  # 如果有检测到的ROI区域
-        # 垂直拼接ROI（不做resize）
-        combined_roi = np.zeros((total_height, max_width, 3), dtype=np.uint8)
-        current_y = 0
-        for i, roi in enumerate(rois):
-            h, w = roi.shape[:2]
-            combined_roi[current_y:current_y + h, :w] = roi
-            positions[i] = (*positions[i], current_y)  # 添加y偏移
-            current_y += h
-            
-        # 第二层神经网络识别
-        combined_roi = np.ascontiguousarray(combined_roi)
-        result_n = detector_next.predict(combined_roi)
-        det_time += 1
-        # cv2.imshow("roi", combined_roi)
-
-        if result_n:
-            # 先将每个ROI区域从combined_roi映射回原图对应位置
-            for i, (left, top, w, h, y_offset) in enumerate(positions):
-                roi_height = rois[i].shape[0]
-                # 从combined_roi中提取对应区域
-                roi_region = combined_roi[y_offset:y_offset + roi_height, :w]
-                # 映射回原图
-                img0[top:top + roi_height, left:left + w] = roi_region
-
-            for detection1 in result_n:
-                cls, xywh, conf = detection1
-                if cls:
-                    x, y, w, h = xywh
-                    
-                    # 找到这个检测结果属于哪个原始ROI
-                    original_roi_index = -1
-                    for i, (_, _, _, roi_h, roi_y) in enumerate(positions):
-                        if y >= roi_y and y < roi_y + roi_h:
-                            original_roi_index = i
-                            break
-                            
-                    if original_roi_index != -1:
-                        # 将坐标映射回原图
-                        left, top, _, _ = positions[original_roi_index][:4]
+                for detection1 in result_n:
+                    cls, xywh, conf = detection1
+                    if cls:  # 所有装甲板都处理，可选择屏蔽一些:
+                        # print(cls)
+                        x, y, w, h = xywh
                         x = x + left
-                        y = y - positions[original_roi_index][4] + top
-                        
+                        y = y + top
+                        # cv2.circle(img0, (int(x), int(y)), 15, (255, 0, 0), -1)
+                        t1 = time.time()
+                        # print(x, y, w, h)
                         # 原图中装甲板的中心下沿作为待仿射变化的点
-                        camera_point = np.array([[[min(x + 0.5 * w, img_x), min(y + 1.5 * h, img_y)]]], dtype=np.float32)
+                        camera_point = np.array([[[min(x + 0.5 * w, img_x), min(y + 1.5 * h, img_y)]]],
+                                                dtype=np.float32)
                         # 低到高依次仿射变化
                         # 先套用地面层仿射变化矩阵
                         mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_ground)
@@ -946,52 +896,30 @@ while True:
 
     # 获取所有识别到的机器人坐标
     all_filter_data = filter.get_all_data()
-    if not ser1:  # 检查串口是否可用
-        # print(all_filter_data_name)
-        if all_filter_data != {}:
-            for name, xyxy in all_filter_data.items():
-                # print(name, xyxy)
-                if xyxy is not None:
-                    if name[0] == "R":
-                        color_m = (0, 0, 255)
-                    else:
-                        color_m = (255, 0, 0)
-                    if state == 'R':
-                        filtered_xyz = (2800 - xyxy[1], xyxy[0])  # 缩放坐标到地图图像
-                    else:
-                        filtered_xyz = (xyxy[1], 1500 - xyxy[0])  # 缩放坐标到地图图像
-                    # 只绘制敌方阵营的机器人（这里不会绘制盲区预测的机器人）
-                    if name[0] != state:
-                        cv2.circle(map, (int(filtered_xyz[0]), int(filtered_xyz[1])), 15, color_m, -1)  # 绘制圆
-                        cv2.putText(map, str(name),
-                                    (int(filtered_xyz[0]) - 5, int(filtered_xyz[1]) + 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 255, 255), 5)
-                        ser_x = int(filtered_xyz[0]) * 10 / 10
-                        ser_y = int(1500 - filtered_xyz[1]) * 10 / 10
-                        cv2.putText(map, "(" + str(ser_x) + "," + str(ser_y) + ")",
-                                    (int(filtered_xyz[0]) - 100, int(filtered_xyz[1]) + 60),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
-    else:
-        for name in send_map:
-            if name[0] != state:  # 敌方阵营
-                x, y = send_map[name]
-                if x == 0 and y == 0:
-                    continue  # 跳过无效坐标
-                # 转换为地图坐标系
-                x_map = x
-                y_map = 1500 - y
-                # 设置颜色
-                color_m = (0, 0, 255) if name[0] == 'R' else (255, 0, 0)
-                # 绘制圆点
-                cv2.circle(map, (int(x_map), int(y_map)), 15, color_m, -1)
-                # 绘制机器人名称
-                cv2.putText(map, str(name),
-                            (int(x_map) - 5, int(y_map) + 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 255, 255), 5)
-                # 绘制坐标文本
-                cv2.putText(map, f"({x_map}, {y_map})",
-                            (int(x_map) - 100, int(y_map) + 60),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
+    # print(all_filter_data_name)
+    if all_filter_data != {}:
+        for name, xyxy in all_filter_data.items():
+            # print(name, xyxy)
+            if xyxy is not None:
+                if name[0] == "R":
+                    color_m = (0, 0, 255)
+                else:
+                    color_m = (255, 0, 0)
+                if state == 'R':
+                    filtered_xyz = (2800 - xyxy[1], xyxy[0])  # 缩放坐标到地图图像
+                else:
+                    filtered_xyz = (xyxy[1], 1500 - xyxy[0])  # 缩放坐标到地图图像
+                # 只绘制敌方阵营的机器人（这里不会绘制盲区预测的机器人）
+                if name[0] != state:
+                    cv2.circle(map, (int(filtered_xyz[0]), int(filtered_xyz[1])), 15, color_m, -1)  # 绘制圆
+                    cv2.putText(map, str(name),
+                                (int(filtered_xyz[0]) - 5, int(filtered_xyz[1]) + 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 255, 255), 5)
+                    ser_x = int(filtered_xyz[0]) * 10 / 10
+                    ser_y = int(1500 - filtered_xyz[1]) * 10 / 10
+                    cv2.putText(map, "(" + str(ser_x) + "," + str(ser_y) + ")",
+                                (int(filtered_xyz[0]) - 100, int(filtered_xyz[1]) + 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
 
     te = time.time()
     t_p = te - ts

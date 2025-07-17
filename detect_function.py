@@ -62,6 +62,7 @@ class YOLOv5Detector:
 
         im0 = img.copy()
         im = letterbox(im0, self.img_size, self.model.stride, auto=self.model.pt)[0]
+        # cv2.imshow('im', im)
         im = im.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         im = np.ascontiguousarray(im)
 
