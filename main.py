@@ -781,7 +781,7 @@ weights_path = config['paths']['models']['car']
 weights_path_next = config['paths']['models']['armor']
 detector = YOLOv5Detector(weights_path, data='yaml/car.yaml', conf_thres=0.1, iou_thres=0.5, max_det=14, ui=True)
 detector_next = YOLOv5Detector(weights_path_next, data='yaml/armor.yaml', conf_thres=0.50, iou_thres=0.2,
-                               max_det=1,
+                               max_det=10,
                                ui=True)
 
 # 串口接收线程
@@ -840,59 +840,127 @@ while True:
             # ROI出机器人区域
             cropped = camera_image[top:top + h, left:left + w]
             cropped_img = np.ascontiguousarray(cropped)
-            # 第二层神经网络识别
-            result_n = detector_next.predict(cropped_img)
-            det_time += 1
-            if result_n:
-                # 叠加第二次检测结果到原图的对应位置
-                img0[top:top + h, left:left + w] = cropped_img
+            # --- 新增：收集所有ROI ---
+            if 'roi_list' not in locals():
+                roi_list = []
+                roi_pos = []
+            roi_list.append(cropped_img)
+            roi_pos.append((left, top, w, h))
+    # --- 新增：拼接ROI并批量识别 ---
+    def pack_rois_to_canvas(roi_list, roi_pos, canvas_size=(640, 640), padding=10):
+        """
+        将roi_list拼接到若干张canvas_size的画布上，返回画布列表和每个roi在画布中的位置
+        每个ROI四周加padding，避免目标贴边
+        """
+        canvases = []
+        canvas_rois = []  # 每个画布上的roi信息: [(roi_idx, x_with_pad, y_with_pad, w, h, x_raw, y_raw)]
+        cur_canvas = np.zeros((canvas_size[1], canvas_size[0], 3), dtype=np.uint8)
+        cur_rois = []
+        x, y, row_h = 0, 0, 0
+        for idx, roi in enumerate(roi_list):
+            h, w = roi.shape[:2]
+            ph, pw = h + 2 * padding, w + 2 * padding
+            if pw > canvas_size[0] or ph > canvas_size[1]:
+                continue  # 跳过过大的roi
+            if x + pw > canvas_size[0]:
+                x = 0
+                y += row_h
+                row_h = 0
+            if y + ph > canvas_size[1]:
+                canvases.append(cur_canvas)
+                canvas_rois.append(cur_rois)
+                cur_canvas = np.zeros((canvas_size[1], canvas_size[0], 3), dtype=np.uint8)
+                cur_rois = []
+                x, y, row_h = 0, 0, 0
+            # 先填充黑色，再放ROI
+            cur_canvas[y:y+ph, x:x+pw] = 0
+            cur_canvas[y+padding:y+padding+h, x+padding:x+padding+w] = roi
+            cur_rois.append((idx, x+padding, y+padding, w, h, x, y))  # 记录带padding和原始canvas坐标
+            x += pw
+            row_h = max(row_h, ph)
+        if cur_rois:
+            canvases.append(cur_canvas)
+            canvas_rois.append(cur_rois)
+        return canvases, canvas_rois
+    if 'roi_list' in locals() and roi_list:
+        canvases, canvas_rois = pack_rois_to_canvas(roi_list, roi_pos, padding=10)
+        # 显示所有拼接画布
+        # for i, canvas in enumerate(canvases):
+        #     cv2.imshow(f'canvas_{i}', canvas)
+        all_results = []
+        for i, (canvas, rois) in enumerate(zip(canvases, canvas_rois)):
+            result_n = detector_next.predict(canvas)
+            canvas_show = canvas.copy()
+            # 画出所有ROI内容区域
+            for idx, rx, ry, rw, rh, ox, oy in rois:
+                cv2.rectangle(canvas_show, (rx, ry), (rx+rw, ry+rh), (0,0,255), 2)  # 红色框表示ROI内容
+            # 画出所有检测框
+            # for detection1 in result_n:
+            #     cls, xywh, conf = detection1
+            #     x, y, w, h = xywh
+            #     cv2.rectangle(canvas_show, (int(x), int(y)), (int(x + w), int(y + h)), (0, 255, 0), 2)
+            #     cv2.putText(canvas_show, f'{cls} {conf:.2f}', (int(x), int(y) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.imshow(f'canvas_result_{i}', canvas_show)
 
+            # 复原检测框并画到img0上（每个ROI只保留置信度最高的）
+            for idx, rx, ry, rw, rh, ox, oy in rois:
+                best_det = None
+                best_conf = -1
+                best_xywh = None
+                best_cls = None
+                # 遍历所有检测框，找属于该ROI的
                 for detection1 in result_n:
                     cls, xywh, conf = detection1
-                    if cls:  # 所有装甲板都处理，可选择屏蔽一些:
-                        # print(cls)
-                        x, y, w, h = xywh
-                        x = x + left
-                        y = y + top
-                        # cv2.circle(img0, (int(x), int(y)), 15, (255, 0, 0), -1)
-                        t1 = time.time()
-                        # print(x, y, w, h)
-                        # 原图中装甲板的中心下沿作为待仿射变化的点
-                        camera_point = np.array([[[min(x + 0.5 * w, img_x), min(y + 1.5 * h, img_y)]]],
-                                                dtype=np.float32)
-                        # 低到高依次仿射变化
-                        # 先套用地面层仿射变化矩阵
-                        mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_ground)
-                        # 限制转换后的点在地图范围内
+                    x, y, w, h = xywh
+                    cx, cy = x + w // 2, y + h // 2
+                    if rx <= cx < rx + rw and ry <= cy < ry + rh:
+                        if conf > best_conf:
+                            best_conf = conf
+                            best_det = detection1
+                            best_xywh = xywh
+                            best_cls = cls
+                # 只处理置信度最高的
+                if best_det is not None:
+                    x, y, w, h = best_xywh
+                    left, top, _, _ = roi_pos[idx]
+                    x0 = x - rx + left
+                    y0 = y - ry + top
+                    # 画框
+                    cv2.rectangle(img0, (int(x0), int(y0)), (int(x0 + w), int(y0 + h)), (255, 0, 255), 2)
+                    cv2.putText(img0, f'{best_cls} {best_conf:.2f}', (int(x0), int(y0) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+                    # 原图中装甲板的中心下沿作为待仿射变化的点
+                    t1 = time.time()
+                    camera_point = np.array([[[min(x0 + 0.5 * w, img_x), min(y0 + 1.5 * h, img_y)]]], dtype=np.float32)
+                    # 先套用地面层仿射变化矩阵
+                    mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_ground)
+                    x_c = max(int(mapped_point[0][0][0]), 0)
+                    y_c = max(int(mapped_point[0][0][1]), 0)
+                    x_c = min(x_c, width)
+                    y_c = min(y_c, height)
+                    color = mask_image[y_c, x_c]  # 通过掩码图像，获取地面层的颜色：黑（0，0，0）
+                    if color[0] == color[1] == color[2] == 0:
+                        X_M = x_c
+                        Y_M = y_c
+                        # Z_M = 0
+                    else:
+                        # 不满足则继续套用R型高地层仿射变换矩阵
+                        mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_height_r)
                         x_c = max(int(mapped_point[0][0][0]), 0)
                         y_c = max(int(mapped_point[0][0][1]), 0)
                         x_c = min(x_c, width)
                         y_c = min(y_c, height)
-                        color = mask_image[y_c, x_c]  # 通过掩码图像，获取地面层的颜色：黑（0，0，0）
-                        if color[0] == color[1] == color[2] == 0:
-                            X_M = x_c
-                            Y_M = y_c
-                            # Z_M = 0
-                            # filter.add_data(cls, X_M, Y_M)
-                        else:
-                            # 不满足则继续套用R型高地层仿射变换矩阵
-                            mapped_point = cv2.perspectiveTransform(camera_point.reshape(1, 1, 2), M_height_r)
-                            # 限制转换后的点在地图范围内
-                            x_c = max(int(mapped_point[0][0][0]), 0)
-                            y_c = max(int(mapped_point[0][0][1]), 0)
-                            x_c = min(x_c, width)
-                            y_c = min(y_c, height)
-                            color = mask_image[y_c, x_c]  # 通过掩码图像，获取R型高地层的颜色：绿（0，255，0）
-                            X_M = x_c
-                            Y_M = y_c
-                            # Z_M = 400
-                            # filter.add_data(cls, X_M, Y_M)
-                        if isinstance(filter, SlidingWindowFilter):
-                            # 滑动窗口需要完整坐标序列
-                            filter.add_data(cls, X_M, Y_M)
-                        else:
-                            # 卡尔曼滤波直接更新
-                            filter.add_data(cls, X_M, Y_M)
+                        color = mask_image[y_c, x_c]  # 通过掩码图像，获取R型高地层的颜色：绿（0，255，0）
+                        X_M = x_c
+                        Y_M = y_c
+                        # Z_M = 400
+                    if isinstance(filter, SlidingWindowFilter):
+                        # 滑动窗口需要完整坐标序列
+                        filter.add_data(best_cls, X_M, Y_M)
+                    else:
+                        # 卡尔曼滤波直接更新
+                        filter.add_data(best_cls, X_M, Y_M)
+        del roi_list
+        del roi_pos
 
     # 获取所有识别到的机器人坐标
     all_filter_data = filter.get_all_data()

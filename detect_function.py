@@ -115,3 +115,4 @@ class YOLOv5Detector:
         # LOGGER.info(f'({t3 - t2:.3f}s)')
 
         return detections
+    
