@@ -847,7 +847,7 @@ while True:
             roi_list.append(cropped_img)
             roi_pos.append((left, top, w, h))
     # --- 新增：拼接ROI并批量识别 ---
-    def pack_rois_to_canvas(roi_list, roi_pos, canvas_size=(640, 640), padding=10):
+    def pack_rois_to_canvas(roi_list, roi_pos, canvas_size=(320, 320), padding=10):
         """
         将roi_list拼接到若干张canvas_size的画布上，返回画布列表和每个roi在画布中的位置
         每个ROI四周加padding，避免目标贴边
