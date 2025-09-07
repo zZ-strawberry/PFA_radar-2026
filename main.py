@@ -18,9 +18,9 @@ from detect_function import YOLOv5Detector
 from RM_serial_py.ser_api import build_send_packet, receive_packet, Radar_decision, \
     build_data_decision, build_data_radar_all
 import yaml
+
 with open("config.yaml", "r", encoding="utf-8") as f:  # 指定 UTF-8 编码
     config = yaml.safe_load(f)
-
 
 state = config['global']['state']  # R:红方/B:蓝方
 assert config['filter']['type'] in ['kalman', 'sliding_window'], "滤波器类型必须为kalman或sliding_window"
@@ -67,7 +67,7 @@ width -= 1
 
 # 初始化战场信息UI（易伤情况、双倍易伤次数、双倍易伤触发状态）
 information_ui = np.zeros((config['ui']['info_panel_size'][1],
-                          config['ui']['info_panel_size'][0], 3), dtype=np.uint8) * 255
+                           config['ui']['info_panel_size'][0], 3), dtype=np.uint8) * 255
 information_ui_show = information_ui.copy()
 double_vulnerability_chance = -1  # 双倍易伤机会数
 opponent_double_vulnerability = -1  # 是否正在触发双倍易伤
@@ -137,6 +137,7 @@ guess_table = {}
 for robot, points in config['blind_zone']['points'].items():
     guess_table[robot] = [tuple(point) for point in points]
 
+
 class KalmanFilter:
     def __init__(self, process_noise=1e-5, measurement_noise=1e-1):
         self.kf = cv2.KalmanFilter(4, 2)
@@ -190,6 +191,7 @@ class KalmanFilter:
         state = self.kf.statePost
         return (state[0, 0], state[1, 0])
 
+
 class EnhancedKalmanFilter(KalmanFilter):
     def __init__(self,
                  process_noise=float(config['kalman']['process_noise']),
@@ -213,6 +215,7 @@ class EnhancedKalmanFilter(KalmanFilter):
             self.kf.processNoiseCov[3, 3] = min(0.5, 0.1 + abs(dy_val) / 10)
 
         super().update(measurement)
+
 
 class KalmanFilterWrapper:
     def __init__(self, max_inactive_time=2.0):
@@ -316,6 +319,7 @@ class SlidingWindowFilter:
 
         return filtered
 
+
 # 滤波器选择
 def create_filter(config):
     filter_type = config['filter']['type']
@@ -332,6 +336,20 @@ def create_filter(config):
         )
     else:
         raise ValueError(f"Unsupported filter type: {filter_type}")
+
+
+# 读取视频帧
+def video_loop():
+    global camera_image, cap
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            # 视频结束，重置到开头重新播放
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            continue
+        camera_image = frame.copy()
+        time.sleep(0.03)  # 控制帧率
+
 
 # 海康相机图像获取线程
 def hik_camera_get():
@@ -543,7 +561,7 @@ def ser_send():
         # print('发送：',send_name, seq_s)
         # time.sleep(0.1 - waste_time)
         return guess_table.get(send_name)[guess_index.get(send_name)][0], \
-        guess_table.get(send_name)[guess_index.get(send_name)][1]
+            guess_table.get(send_name)[guess_index.get(send_name)][1]
 
     time_s = time.time()
     target_last = 0  # 上一帧的飞镖目标
@@ -567,7 +585,8 @@ def ser_send():
     }
     while True:
 
-        guess_time_limit = config['blind_zone']['base_time'] + config['blind_zone']['offset_time']  # 单位：秒，根据上一帧的信道占用数动态调整单点预测时间
+        guess_time_limit = config['blind_zone']['base_time'] + config['blind_zone'][
+            'offset_time']  # 单位：秒，根据上一帧的信道占用数动态调整单点预测时间
         # print(guess_time_limit)
         send_count = 0  # 重置信道占用数
         try:
@@ -799,9 +818,16 @@ else:
     print("跳过串口发送线程初始化")
 
 camera_image = None
+cap = None
 
 if camera_mode == 'test':
     camera_image = cv2.imread('images/test_image.jpg')
+    # cap = cv2.VideoCapture("images/screen_20250524_093555.mp4")
+    # if not cap.isOpened():
+    #     print("Error: Could not open video.")
+    #     exit()
+    # thread_camera = threading.Thread(target=video_loop, daemon=True)
+    # thread_camera.start()
 elif camera_mode == 'hik':
     # 海康相机图像获取线程
     thread_camera = threading.Thread(target=hik_camera_get, daemon=True)
@@ -846,8 +872,10 @@ while True:
                 roi_pos = []
             roi_list.append(cropped_img)
             roi_pos.append((left, top, w, h))
+
+
     # --- 新增：拼接ROI并批量识别 ---
-    def pack_rois_to_canvas(roi_list, roi_pos, canvas_size=(320, 320), padding=10):
+    def pack_rois_to_canvas(roi_list, roi_pos, canvas_size=(160, 160), padding=10):
         """
         将roi_list拼接到若干张canvas_size的画布上，返回画布列表和每个roi在画布中的位置
         每个ROI四周加padding，避免目标贴边
@@ -873,15 +901,17 @@ while True:
                 cur_rois = []
                 x, y, row_h = 0, 0, 0
             # 先填充黑色，再放ROI
-            cur_canvas[y:y+ph, x:x+pw] = 0
-            cur_canvas[y+padding:y+padding+h, x+padding:x+padding+w] = roi
-            cur_rois.append((idx, x+padding, y+padding, w, h, x, y))  # 记录带padding和原始canvas坐标
+            cur_canvas[y:y + ph, x:x + pw] = 0
+            cur_canvas[y + padding:y + padding + h, x + padding:x + padding + w] = roi
+            cur_rois.append((idx, x + padding, y + padding, w, h, x, y))  # 记录带padding和原始canvas坐标
             x += pw
             row_h = max(row_h, ph)
         if cur_rois:
             canvases.append(cur_canvas)
             canvas_rois.append(cur_rois)
         return canvases, canvas_rois
+
+
     if 'roi_list' in locals() and roi_list:
         canvases, canvas_rois = pack_rois_to_canvas(roi_list, roi_pos, padding=10)
         # 显示所有拼接画布
@@ -893,7 +923,7 @@ while True:
             canvas_show = canvas.copy()
             # 画出所有ROI内容区域
             for idx, rx, ry, rw, rh, ox, oy in rois:
-                cv2.rectangle(canvas_show, (rx, ry), (rx+rw, ry+rh), (0,0,255), 2)  # 红色框表示ROI内容
+                cv2.rectangle(canvas_show, (rx, ry), (rx + rw, ry + rh), (0, 0, 255), 2)  # 红色框表示ROI内容
             # 画出所有检测框
             # for detection1 in result_n:
             #     cls, xywh, conf = detection1
@@ -927,7 +957,8 @@ while True:
                     y0 = y - ry + top
                     # 画框
                     cv2.rectangle(img0, (int(x0), int(y0)), (int(x0 + w), int(y0 + h)), (255, 0, 255), 2)
-                    cv2.putText(img0, f'{best_cls} {best_conf:.2f}', (int(x0), int(y0) - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+                    cv2.putText(img0, f'{best_cls} {best_conf:.2f}', (int(x0), int(y0) - 5), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7, (255, 0, 255), 2)
                     # 原图中装甲板的中心下沿作为待仿射变化的点
                     t1 = time.time()
                     camera_point = np.array([[[min(x0 + 0.5 * w, img_x), min(y0 + 1.5 * h, img_y)]]], dtype=np.float32)

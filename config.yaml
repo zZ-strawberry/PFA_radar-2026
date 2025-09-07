@@ -1,5 +1,5 @@
 global:
-  state: 'B'  # 队伍颜色 R/B
+  state: 'R'  # 队伍颜色 R/B
   camera_mode: 'test'  # 'test':测试模式,'hik':海康相机,'video':USB相机（videocapture）
   use_serial: False  # 串口启用开关  保证了无串口时能正常调试，虽然没什么影响（有try）
   save_img: False  # 是否保存图像
@@ -20,15 +20,16 @@ filter:
     max_inactive_time: 2.0
 
 paths:
-  test_img: 'images/test_image.jpg' # 测试图片
+  # test_img: 'images/test1.jpg' # 测试图片
+  test_img: 'images/screen_20250524_093555.png' # 测试图片
   calibration:
     red: 'arrays_test_red.npy' # 加载标定好的仿射变换矩阵
     blue: 'arrays_test_blue.npy'
   map_images:
-    red: 'images-2025/map_red.jpg'  # 加载红方视角地图
-    blue: 'images-2025/map_blue.jpg'
-    mask: 'images-2025/map_mask.jpg' # 加载落点判断掩码
-    backup: 'images-2025/map.jpg'
+    red: 'images-2026/map_red.jpg'  # 加载红方视角地图
+    blue: 'images-2026/map_blue.jpg'
+    mask: 'images-2026/map_mask.jpg' # 加载落点判断掩码
+    backup: 'images-2026/map.jpg'
   models:
     car: 'models/car.pt'
     armor: 'models/armor.pt'

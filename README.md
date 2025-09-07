@@ -139,8 +139,8 @@ trtexec.exe --onnx=models/armor.onnx --saveEngine=models/armor.engine --fp16
     |       test_image.jpg # 测试鸟瞰图
     |       全国第一.jpg 
     |
-    +---images-2025 # 需求图片文件夹
-    |       map.jpg # 2025地图
+    +---images-2026 # 需求图片文件夹
+    |       map.jpg # 2026地图
     |       map_blue.jpg
     |       map_mask.jpg # 掩码地图
     |       map_red.jpg
