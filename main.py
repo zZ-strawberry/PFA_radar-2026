@@ -339,19 +339,6 @@ def create_filter(config):
         raise ValueError(f"Unsupported filter type: {filter_type}")
 
 
-# 读取视频帧
-def video_loop():
-    global camera_image, cap
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            # 视频结束，重置到开头重新播放
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            continue
-        camera_image = frame.copy()
-        time.sleep(0.03)  # 控制帧率
-
-
 # 海康相机图像获取线程
 def hik_camera_get():
     # 获得设备信息
@@ -467,12 +454,77 @@ def hik_camera_get():
 
 def video_capture_get():
     global camera_image
-    cam = cv2.VideoCapture(0)
-    while True:
-        ret, img = cam.read()
-        if ret:
+    cam = None
+    try:
+        cam = cv2.VideoCapture(0)
+        if not cam.isOpened():
+            print("摄像头打开失败")
+            return
+        while True:
+            ret, img = cam.read()
+            if not ret:
+                print("摄像头读取失败，尝试重新连接...")
+                cam.release()
+                time.sleep(1)  # 等待1秒后重试
+                cam = cv2.VideoCapture(0)
+                if not cam.isOpened():
+                    print("重连失败，退出...")
+                    break
             camera_image = img
             time.sleep(0.016)  # 60fps
+    except Exception as e:
+        print(f"摄像头捕获异常：{e}")
+    finally:
+        if cam is not None and cam.isOpened():
+            cam.release()
+            print("摄像头资源已释放")
+
+# 测试视频
+def test_video_capture_get(video_path, loop=True, start_frame=0, playback_speed=1.0):
+    global camera_image
+    try:
+        import av
+        # 使用 Windows/NVIDIA 友好的 d3d11va 硬件解码
+        #可将 hwaccel 改为 'cuda'或 'nvdec'
+        container = av.open(video_path, mode='r', options={'hwaccel': 'd3d11va'})
+        stream = next((s for s in container.streams if s.type == 'video'), None)
+        if stream is None:
+            container.close()
+            print(f"未找到视频流：{video_path}")
+            return
+        # 起始帧
+        if start_frame and start_frame > 0:
+            try:
+                container.seek(int(start_frame))
+            except Exception:
+                pass
+        # 延时以接近原始帧率
+        fps = float(stream.average_rate) if stream and stream.average_rate else 30.0
+        delay = max(1.0 / fps / max(playback_speed, 1e-6), 0.0)
+        while True:
+            got_frame = False
+            for packet in container.demux(stream):
+                for frame in packet.decode():
+                    img = frame.to_ndarray(format='bgr24')
+                    camera_image = img
+                    got_frame = True
+                    if delay > 0:
+                        time.sleep(delay)
+                if got_frame:
+                    break
+            if not got_frame:
+                if loop:
+                    try:
+                        container.seek(0)
+                        continue
+                    except Exception:
+                        break
+                else:
+                    break
+        container.close()
+        print("测试视频资源已释放")
+    except Exception as e:
+        print(f"测试视频捕获异常（PyAV）：{e}")
 
 
 # 串口发送线程
@@ -822,13 +874,22 @@ camera_image = None
 cap = None
 
 if camera_mode == 'test':
-    camera_image = cv2.imread('images/test_image.jpg')
-    # cap = cv2.VideoCapture("images/screen_20250524_093555.mp4")
-    # if not cap.isOpened():
-    #     print("Error: Could not open video.")
-    #     exit()
-    # thread_camera = threading.Thread(target=video_loop, daemon=True)
-    # thread_camera.start()
+    # 优先使用视频测试配置，其次回落到静态图片
+    test_cfg = config.get('global', {}).get('test', {}) if isinstance(config.get('global', {}).get('test', {}), dict) else {}
+    video_path = test_cfg.get('video_path') or config.get('paths', {}).get('test_video')
+    if video_path and isinstance(video_path, str) and len(video_path) > 0:
+        if not os.path.exists(video_path):
+            print(f"测试视频路径不存在：{video_path}，回退到静态测试图片")
+            camera_image = cv2.imread(config['paths']['test_img'])
+        else:
+            loop = bool(test_cfg.get('loop', True))
+            start_frame = int(test_cfg.get('start_frame', 0) or 0)
+            playback_speed = float(test_cfg.get('playback_speed', 1.0) or 1.0)
+            print(f"使用测试视频：{video_path}，loop={loop}, start_frame={start_frame}, speed={playback_speed}")
+            thread_camera = threading.Thread(target=test_video_capture_get, args=(video_path, loop, start_frame, playback_speed), daemon=True)
+            thread_camera.start()
+    else:
+        camera_image = cv2.imread(config['paths']['test_img'])
 elif camera_mode == 'hik':
     # 海康相机图像获取线程
     thread_camera = threading.Thread(target=hik_camera_get, daemon=True)
